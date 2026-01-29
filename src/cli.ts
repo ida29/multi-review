@@ -6,39 +6,40 @@ import { readInput } from './input/index.js';
 import { parseDiff } from './parse/diffParser.js';
 import { loadFileContext } from './parse/contextLoader.js';
 import { triageFiles, triageFilesRulesOnly } from './triage/triager.js';
-import { reviewFilesInParallel } from './review/parallelReviewer.js';
+import { reviewInBatches } from './review/parallelReviewer.js';
+import { createBatches } from './review/batcher.js';
 import { aggregate } from './aggregate/aggregator.js';
 import { CopilotClientPool } from './shared/copilotPool.js';
 import { printAggregatedReport } from './output/terminal.js';
 import { printJsonReport } from './output/json.js';
 import { PERSPECTIVE_LABELS } from './review/perspectives.js';
-import type { FileDiffWithContext, TriagedFile } from './types.js';
+import type { FileDiffWithContext, TriagedFile, BatchReviewResult } from './types.js';
 import { ALL_PERSPECTIVES } from './types.js';
 
 /**
- * Run the multi-review CLI (v2 pipeline).
+ * Run the multi-review CLI (v0.4 pipeline — batch review).
  *
- * Pipeline: raw diff → Parse → Triage → Per-File Review (model × perspective) → Aggregate → Output
+ * Pipeline: raw diff → Parse → Triage → Batch Review (model × perspective) → Aggregate → Output
  */
 export async function run(argv: string[]): Promise<void> {
   const program = new Command()
     .name('multi-review')
     .description('Multi-AI multi-perspective parallel code review using GitHub Copilot SDK')
-    .version('0.3.0')
+    .version('0.4.0')
     .argument('[file]', 'File to review')
     .option('--diff', 'Review all uncommitted changes')
     .option('--pr <number>', 'Review a pull request', parseInt)
     .option('--stdin', 'Read from stdin (for piping)')
     .option('--models <list>', 'Comma-separated model list')
     .option('--merge-model <model>', 'Model to use for triage')
-    .option('--timeout <seconds>', 'Timeout per model in seconds (default: 600)', parseInt)
-    .option('--retries <n>', 'Max retries per model per file (default: 2)', parseInt)
+    .option('--timeout <seconds>', 'Timeout per model in seconds (default: 120)', parseInt)
+    .option('--retries <n>', 'Max retries per model per file (default: 0)', parseInt)
     .option(
       '--retry-delay <ms>',
       'Base retry delay in ms, doubles each retry (default: 2000)',
       parseInt,
     )
-    .option('--concurrency <n>', 'Max files to review simultaneously', parseInt)
+    .option('--concurrency <n>', 'Max batch API calls simultaneously', parseInt)
     .option('--context-lines <n>', 'Max context lines per file', parseInt)
     .option(
       '--perspectives <list>',
@@ -78,7 +79,7 @@ export async function run(argv: string[]): Promise<void> {
   );
   console.log(
     pc.dim(
-      `  Reviewers per file: ${config.models.length} models × ${config.perspectives.length} perspectives = ${config.models.length * config.perspectives.length}`,
+      `  Reviewers: ${config.models.length} models × ${config.perspectives.length} perspectives = ${config.models.length * config.perspectives.length} per batch`,
     ),
   );
 
@@ -168,30 +169,68 @@ export async function run(argv: string[]): Promise<void> {
 
   console.log(pc.dim(`  ${filesToReview.length} to review, ${skippedCount} skipped`));
 
-  // ─── Stage 3: Per-File Review ─────────────────────────────
+  // ─── Stage 3: Batch Review ─────────────────────────────────
 
   const allChangedFiles = triaged.map((t) => t.file.path);
   const reviewPool = new CopilotClientPool(config.models);
 
-  const totalApiCalls = filesToReview.length * config.models.length * config.perspectives.length;
+  // Compute batch info for progress display
+  const batches = createBatches(filesToReview);
+  const batchCount = batches.length;
+  const totalApiCalls = batchCount * config.models.length * config.perspectives.length;
 
-  const fileStatus = new Map<string, string>();
-  for (const f of filesToReview) {
-    fileStatus.set(f.path, '...');
+  console.log(
+    pc.dim(
+      `  Batched: ${filesToReview.length} files → ${batchCount} batch(es) × ${config.models.length} models × ${config.perspectives.length} perspectives = ${totalApiCalls} API calls`,
+    ),
+  );
+
+  if (totalApiCalls > 100) {
+    console.log(
+      pc.yellow(
+        `  ⚠ ${totalApiCalls} API calls planned. Use --perspectives, --models, or --no-triage to reduce.`,
+      ),
+    );
   }
-  const formatStatus = () =>
-    `${[...fileStatus.values()].filter((v) => v === '...').length} pending`;
+
+  let completedBatches = 0;
+  let successBatches = 0;
+  let partialBatches = 0;
+  let fallbackBatches = 0;
+  const activeCalls = new Set<string>();
+  const reviewStartTime = Date.now();
+
+  const formatElapsed = () => {
+    const sec = Math.floor((Date.now() - reviewStartTime) / 1000);
+    return sec < 60 ? `${sec}s` : `${Math.floor(sec / 60)}m${sec % 60}s`;
+  };
+
+  const formatProgress = () => {
+    const parts = [`${completedBatches}/${totalApiCalls} calls`];
+    if (partialBatches > 0) parts.push(pc.yellow(`${partialBatches} partial`));
+    if (fallbackBatches > 0) parts.push(pc.red(`${fallbackBatches} fallback`));
+
+    const activeList = [...activeCalls].slice(0, 3).join(', ');
+    const moreCount = activeCalls.size > 3 ? ` +${activeCalls.size - 3}` : '';
+
+    return `Reviewing [${formatElapsed()}] ${parts.join(', ')}${activeList ? ` | ${activeList}${moreCount}` : ''}`;
+  };
 
   const reviewSpinner = createSpinner(
-    `Reviewing ${filesToReview.length} file(s) × ${config.perspectives.length} perspectives × ${config.models.length} models (${totalApiCalls} API calls): ${formatStatus()}`,
+    `Batch reviewing ${filesToReview.length} file(s) in ${batchCount} batch(es) (${totalApiCalls} API calls)`,
   ).start();
+
+  // Update spinner every second to show elapsed time
+  const progressTimer = setInterval(() => {
+    reviewSpinner.update({ text: formatProgress() });
+  }, 1000);
 
   const timeoutMs = config.timeoutSeconds * 1000;
 
   try {
     await reviewPool.start();
 
-    const fileReviews = await reviewFilesInParallel(
+    const fileReviews = await reviewInBatches(
       filesToReview,
       reviewPool,
       config.models,
@@ -201,25 +240,49 @@ export async function run(argv: string[]): Promise<void> {
       timeoutMs,
       config.maxRetries,
       config.retryDelayMs,
+      undefined, // use default token budget
       {
-        onFileStart: (filePath) => {
-          fileStatus.set(filePath, 'reviewing');
-          reviewSpinner.update({
-            text: `Reviewing: ${formatStatus()}, ${filePath}...`,
-          });
+        onBatchStart: (
+          batchIndex: number,
+          fileCount: number,
+          model: string,
+          perspective: string,
+        ) => {
+          const label = `B${batchIndex + 1}:${model}/${perspective}(${fileCount}f)`;
+          activeCalls.add(label);
+          reviewSpinner.update({ text: formatProgress() });
         },
-        onFileComplete: (filePath, merged) => {
-          const issueCount = merged.issues.length;
-          fileStatus.set(filePath, `done(${issueCount})`);
-          reviewSpinner.update({
-            text: `Reviewing: ${formatStatus()}`,
-          });
+        onBatchComplete: (
+          batchIndex: number,
+          model: string,
+          perspective: string,
+          result: BatchReviewResult,
+        ) => {
+          const label = `B${batchIndex + 1}:${model}/${perspective}(${result.fileResults.length}f)`;
+          activeCalls.delete(label);
+          completedBatches++;
+          if (result.status === 'success') successBatches++;
+          if (result.status === 'partial') partialBatches++;
+          if (result.status === 'fallback') fallbackBatches++;
+          reviewSpinner.update({ text: formatProgress() });
         },
       },
     );
 
+    clearInterval(progressTimer);
+
+    const totalDuration = formatElapsed();
+    const resultParts = [
+      `${filesToReview.length} file(s)`,
+      `${completedBatches} API calls`,
+      totalDuration,
+    ];
+    if (successBatches > 0) resultParts.push(pc.green(`${successBatches} ok`));
+    if (partialBatches > 0) resultParts.push(pc.yellow(`${partialBatches} partial`));
+    if (fallbackBatches > 0) resultParts.push(pc.red(`${fallbackBatches} fallback`));
+
     reviewSpinner.success({
-      text: `Reviews complete: ${filesToReview.length} file(s), ${totalApiCalls} API calls`,
+      text: `Reviews complete: ${resultParts.join(', ')}`,
     });
 
     // ─── Stage 4: Aggregate ─────────────────────────────────
@@ -238,6 +301,7 @@ export async function run(argv: string[]): Promise<void> {
     const hasCritical = report.stats.criticalCount > 0;
     process.exit(hasCritical ? 1 : 0);
   } finally {
+    clearInterval(progressTimer);
     await reviewPool.stop();
   }
 }

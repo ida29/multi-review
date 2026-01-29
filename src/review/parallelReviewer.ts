@@ -3,36 +3,65 @@ import type {
   FileModelReview,
   FileMergedReview,
   ReviewPerspective,
+  BatchReviewResult,
 } from '../types.js';
 import type { CopilotClientPool } from '../shared/copilotPool.js';
-import { reviewFileWithModel } from './reviewer.js';
+import { reviewBatchWithModel } from './reviewer.js';
 import { mergeFileReviews } from '../aggregate/merger.js';
+import { createBatches, MAX_FILES_PER_BATCH } from './batcher.js';
 
-/** Callback for file review progress */
-export interface FileReviewCallbacks {
+/** Callback for batch review progress */
+export interface BatchReviewCallbacks {
+  /** Called when a batch starts processing */
+  onBatchStart?: (
+    batchIndex: number,
+    fileCount: number,
+    model: string,
+    perspective: ReviewPerspective,
+  ) => void;
+  /** Called when a batch completes */
+  onBatchComplete?: (
+    batchIndex: number,
+    model: string,
+    perspective: ReviewPerspective,
+    result: BatchReviewResult,
+  ) => void;
+  /** Called when individual file fallback starts (batch failed) */
   onFileStart?: (filePath: string) => void;
+  /** Called when an individual model call starts (fallback mode) */
+  onModelCallStart?: (filePath: string, model: string, perspective: ReviewPerspective) => void;
+  /** Called when an individual model call completes (fallback mode) */
   onFileModelComplete?: (filePath: string, model: string, review: FileModelReview) => void;
+  /** Called when a file's merged review is complete */
   onFileComplete?: (filePath: string, merged: FileMergedReview) => void;
 }
 
 /**
- * Review files in parallel with concurrency control.
- * For each file, all models × all perspectives review in parallel, then results are merged.
+ * Review files using batch API calls.
  *
- * Total API calls per file = models.length × perspectives.length
+ * Instead of O(files x models x perspectives) API calls,
+ * this batches multiple files into each call for O(batches x models x perspectives) calls.
+ *
+ * Flow:
+ * 1. Split files into token-budget-aware batches
+ * 2. For each (model, perspective) pair, review all batches
+ * 3. Concurrency controls how many (batch, model, perspective) tasks run in parallel
+ * 4. Failed batches fall back to individual file reviews
+ * 5. Merge all results per file
  *
  * @param files - Files to review
  * @param pool - Pre-started CopilotClient pool
  * @param models - Models to use for review
  * @param perspectives - Review perspectives to use
  * @param allChangedFiles - All changed file paths (for cross-reference in prompts)
- * @param concurrency - Max files to review simultaneously
- * @param timeoutMs - Timeout per model per file
- * @param maxRetries - Max retries per model per file (exponential backoff)
- * @param retryDelayMs - Base delay between retries in ms
+ * @param concurrency - Max concurrent batch API calls
+ * @param timeoutMs - Timeout per API call
+ * @param maxRetries - Max retries per file on fallback
+ * @param retryDelayMs - Base retry delay in ms
+ * @param tokenBudget - Max tokens per batch (default: 80K)
  * @param callbacks - Progress callbacks
  */
-export async function reviewFilesInParallel(
+export async function reviewInBatches(
   files: readonly FileDiffWithContext[],
   pool: CopilotClientPool,
   models: readonly string[],
@@ -42,50 +71,76 @@ export async function reviewFilesInParallel(
   timeoutMs: number,
   maxRetries: number = 0,
   retryDelayMs: number = 2000,
-  callbacks?: FileReviewCallbacks,
+  tokenBudget?: number,
+  callbacks?: BatchReviewCallbacks,
 ): Promise<readonly FileMergedReview[]> {
-  const results: FileMergedReview[] = [];
+  // Step 1: Create batches
+  const batches = createBatches(files, tokenBudget);
   const totalReviewers = models.length * perspectives.length;
 
-  // Process files with concurrency limit using a semaphore pattern
-  const queue = [...files];
-  const active: Promise<void>[] = [];
+  // Step 2: Generate all (batch, model, perspective) tasks
+  interface BatchTask {
+    batchIndex: number;
+    batchFiles: readonly FileDiffWithContext[];
+    model: string;
+    perspective: ReviewPerspective;
+  }
 
-  const processFile = async (file: FileDiffWithContext): Promise<void> => {
-    callbacks?.onFileStart?.(file.path);
+  const tasks: BatchTask[] = [];
+  for (let batchIndex = 0; batchIndex < batches.length; batchIndex++) {
+    for (const model of models) {
+      for (const perspective of perspectives) {
+        tasks.push({
+          batchIndex,
+          batchFiles: batches[batchIndex]!,
+          model,
+          perspective,
+        });
+      }
+    }
+  }
 
-    // All models × all perspectives review this file in parallel
-    const modelReviews = await Promise.all(
-      models.flatMap((model) =>
-        perspectives.map(async (perspective) => {
-          const client = pool.getClient(model);
-          const review = await reviewFileWithModel(
-            client,
-            model,
-            perspective,
-            file,
-            allChangedFiles,
-            timeoutMs,
-            maxRetries,
-            retryDelayMs,
-          );
-          callbacks?.onFileModelComplete?.(file.path, model, review);
-          return review;
-        }),
-      ),
+  // Step 3: Execute tasks with concurrency control
+  const allBatchResults: BatchReviewResult[] = [];
+
+  const processBatchTask = async (task: BatchTask): Promise<void> => {
+    callbacks?.onBatchStart?.(
+      task.batchIndex,
+      task.batchFiles.length,
+      task.model,
+      task.perspective,
     );
 
-    // Merge all results (across models AND perspectives) for this file
-    const merged = mergeFileReviews(file.path, modelReviews, totalReviewers);
-    callbacks?.onFileComplete?.(file.path, merged);
-    results.push(merged);
+    const client = pool.getClient(task.model);
+    const result = await reviewBatchWithModel(
+      client,
+      task.model,
+      task.perspective,
+      task.batchFiles,
+      allChangedFiles,
+      timeoutMs,
+      maxRetries,
+      retryDelayMs,
+    );
+
+    // Set the correct batchIndex
+    const resultWithIndex: BatchReviewResult = {
+      ...result,
+      batchIndex: task.batchIndex,
+    };
+
+    allBatchResults.push(resultWithIndex);
+    callbacks?.onBatchComplete?.(task.batchIndex, task.model, task.perspective, resultWithIndex);
   };
 
-  for (const file of queue) {
-    const task = processFile(file);
-    active.push(task);
+  // Semaphore-based concurrency
+  const queue = [...tasks];
+  const active: Promise<void>[] = [];
 
-    // When we hit the concurrency limit, wait for any one to finish
+  for (const task of queue) {
+    const promise = processBatchTask(task);
+    active.push(promise);
+
     if (active.length >= concurrency) {
       await Promise.race(active);
       // Remove settled promises
@@ -101,5 +156,41 @@ export async function reviewFilesInParallel(
   // Wait for remaining
   await Promise.all(active);
 
-  return results;
+  // Step 4: Collect all FileModelReview results per file
+  const fileReviewMap = new Map<string, FileModelReview[]>();
+
+  for (const batchResult of allBatchResults) {
+    for (const fileResult of batchResult.fileResults) {
+      const existing = fileReviewMap.get(fileResult.filePath) ?? [];
+      existing.push(fileResult);
+      fileReviewMap.set(fileResult.filePath, existing);
+    }
+  }
+
+  // Step 5: Merge results per file
+  const mergedResults: FileMergedReview[] = [];
+
+  for (const file of files) {
+    const reviews = fileReviewMap.get(file.path) ?? [];
+    const merged = mergeFileReviews(file.path, reviews, totalReviewers);
+    callbacks?.onFileComplete?.(file.path, merged);
+    mergedResults.push(merged);
+  }
+
+  return mergedResults;
+}
+
+/**
+ * Get batch info for progress display.
+ * Returns the number of batches and total API calls.
+ */
+export function getBatchInfo(
+  fileCount: number,
+  models: readonly string[],
+  perspectives: readonly ReviewPerspective[],
+): { batchCount: number; totalApiCalls: number } {
+  // Estimate batch count — without actual files we use the max files per batch ceiling
+  const batchCount = Math.max(1, Math.ceil(fileCount / MAX_FILES_PER_BATCH));
+  const totalApiCalls = batchCount * models.length * perspectives.length;
+  return { batchCount, totalApiCalls };
 }
