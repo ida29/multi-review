@@ -6,7 +6,7 @@ import {
   DEFAULT_TIMEOUT,
   DEFAULT_CONCURRENCY,
   DEFAULT_CONTEXT_LINES,
-  ALL_PERSPECTIVES,
+  DEFAULT_PERSPECTIVES,
 } from '../src/types.js';
 
 describe('resolveConfig', () => {
@@ -28,7 +28,7 @@ describe('resolveConfig', () => {
     expect(config.timeoutSeconds).toBe(DEFAULT_TIMEOUT);
     expect(config.concurrency).toBe(DEFAULT_CONCURRENCY);
     expect(config.contextLines).toBe(DEFAULT_CONTEXT_LINES);
-    expect(config.perspectives).toEqual(ALL_PERSPECTIVES);
+    expect(config.perspectives).toEqual(DEFAULT_PERSPECTIVES);
     expect(config.noTriage).toBe(false);
     expect(config.jsonOutput).toBe(false);
     expect(config.verbose).toBe(false);
@@ -113,10 +113,10 @@ describe('resolveConfig', () => {
   });
 
   // Perspectives
-  it('defaults to all perspectives', () => {
+  it('defaults to default perspectives (logic, security, design)', () => {
     const config = resolveConfig({});
-    expect(config.perspectives).toEqual(ALL_PERSPECTIVES);
-    expect(config.perspectives.length).toBe(6);
+    expect(config.perspectives).toEqual(DEFAULT_PERSPECTIVES);
+    expect(config.perspectives.length).toBe(3);
   });
 
   it('uses CLI perspectives', () => {

@@ -7,6 +7,7 @@ import {
   DEFAULT_CONCURRENCY,
   DEFAULT_CONTEXT_LINES,
   ALL_PERSPECTIVES,
+  DEFAULT_PERSPECTIVES,
 } from './types.js';
 
 interface RawCliArgs {
@@ -108,7 +109,7 @@ function resolvePerspectives(argPerspectives?: string): readonly ReviewPerspecti
     }
     return valid;
   }
-  return ALL_PERSPECTIVES;
+  return DEFAULT_PERSPECTIVES;
 }
 
 function parseEnvInt(key: string): number | undefined {
