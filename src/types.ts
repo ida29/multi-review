@@ -23,6 +23,13 @@ export const ALL_PERSPECTIVES: readonly ReviewPerspective[] = [
   'testing',
 ] as const;
 
+/** Default perspectives (subset to limit API calls) */
+export const DEFAULT_PERSPECTIVES: readonly ReviewPerspective[] = [
+  'logic',
+  'security',
+  'design',
+] as const;
+
 // ─── Stage 1: Parse ───────────────────────────────────────
 
 /** A single file extracted from a unified diff */
@@ -73,6 +80,16 @@ export interface FileModelReview {
   readonly durationMs: number;
   readonly error?: string;
   readonly retries?: number;
+}
+
+/** Result from a batch review (multiple files in one API call) */
+export interface BatchReviewResult {
+  readonly model: string;
+  readonly perspective: ReviewPerspective;
+  readonly batchIndex: number;
+  readonly fileResults: readonly FileModelReview[];
+  readonly status: 'success' | 'partial' | 'fallback';
+  readonly durationMs: number;
 }
 
 // ─── Stage 4: Aggregation ─────────────────────────────────
@@ -166,11 +183,11 @@ export const DEFAULT_MODELS = ['gpt-5.2', 'claude-opus-4.5', 'gemini-3-pro'] as 
 /** Default merge model */
 export const DEFAULT_MERGE_MODEL = 'gpt-5.2';
 
-/** Default timeout in seconds (10 minutes) */
-export const DEFAULT_TIMEOUT = 600;
+/** Default timeout in seconds (2 minutes) */
+export const DEFAULT_TIMEOUT = 120;
 
-/** Default max retries per model per file */
-export const DEFAULT_MAX_RETRIES = 2;
+/** Default max retries per model per file (0 = no retries to conserve quota) */
+export const DEFAULT_MAX_RETRIES = 0;
 
 /** Default retry delay in ms (doubles each retry: 2s → 4s) */
 export const DEFAULT_RETRY_DELAY_MS = 2000;
