@@ -5,9 +5,26 @@ import {
   buildPerFileReviewMessage,
   buildMergeSystemPrompt,
   buildMergeMessage,
+  buildBatchSystemPrompt,
+  buildBatchReviewMessage,
 } from '../src/review/prompt.js';
 import { getPerspectiveInstructions, PERSPECTIVE_LABELS } from '../src/review/perspectives.js';
 import { ALL_PERSPECTIVES } from '../src/types.js';
+import type { FileDiffWithContext } from '../src/types.js';
+
+/** Helper to create a FileDiffWithContext */
+function makeFile(path: string, diff: string, context: string | null = null): FileDiffWithContext {
+  return {
+    path,
+    diff,
+    context,
+    additions: 10,
+    deletions: 5,
+    isNew: false,
+    isDeleted: false,
+    isBinary: false,
+  };
+}
 
 describe('buildSystemPrompt', () => {
   it('includes severity levels for any perspective', () => {
@@ -195,5 +212,121 @@ describe('buildMergeMessage', () => {
     expect(msg).toContain('=== Review from model-a ===');
     expect(msg).toContain('=== Review from model-b ===');
     expect(msg).toContain('=== Original Code ===');
+  });
+});
+
+// ─── Batch Prompt Tests ──────────────────────────────────────
+
+describe('buildBatchSystemPrompt', () => {
+  it('includes severity levels', () => {
+    const prompt = buildBatchSystemPrompt('logic');
+    expect(prompt).toContain('critical');
+    expect(prompt).toContain('warning');
+    expect(prompt).toContain('suggestion');
+    expect(prompt).toContain('good');
+  });
+
+  it('instructs MULTIPLE files review', () => {
+    const prompt = buildBatchSystemPrompt('logic');
+    expect(prompt).toContain('MULTIPLE files');
+  });
+
+  it('does NOT mention single file', () => {
+    const prompt = buildBatchSystemPrompt('logic');
+    expect(prompt).not.toContain('SINGLE file');
+  });
+
+  it('includes fileReviews schema', () => {
+    const prompt = buildBatchSystemPrompt('security');
+    expect(prompt).toContain('"fileReviews"');
+    expect(prompt).toContain('"filePath"');
+  });
+
+  it('warns against fabricating issues', () => {
+    const prompt = buildBatchSystemPrompt('design');
+    expect(prompt).toContain('Do NOT fabricate');
+  });
+
+  it('instructs to respond with only JSON', () => {
+    const prompt = buildBatchSystemPrompt('performance');
+    expect(prompt).toContain('Respond with ONLY the JSON');
+  });
+
+  it('instructs to return results for EVERY file', () => {
+    const prompt = buildBatchSystemPrompt('logic');
+    expect(prompt).toContain('EVERY file');
+  });
+
+  it('includes perspective-specific label', () => {
+    const prompt = buildBatchSystemPrompt('security');
+    expect(prompt).toContain('Security');
+  });
+
+  it('generates different prompts for different perspectives', () => {
+    const logicPrompt = buildBatchSystemPrompt('logic');
+    const securityPrompt = buildBatchSystemPrompt('security');
+    expect(logicPrompt).not.toEqual(securityPrompt);
+  });
+
+  it('includes perspective instructions', () => {
+    const prompt = buildBatchSystemPrompt('security');
+    expect(prompt).toContain('OWASP');
+  });
+});
+
+describe('buildBatchReviewMessage', () => {
+  it('includes file count in header', () => {
+    const files = [makeFile('src/a.ts', '+line1'), makeFile('src/b.ts', '+line2')];
+    const msg = buildBatchReviewMessage(files, ['src/a.ts', 'src/b.ts']);
+    expect(msg).toContain('2 files');
+  });
+
+  it('includes all file diffs', () => {
+    const files = [
+      makeFile('src/auth.ts', '+const token = "abc";'),
+      makeFile('src/utils.ts', '+export function foo() {}'),
+    ];
+    const msg = buildBatchReviewMessage(files, ['src/auth.ts', 'src/utils.ts']);
+    expect(msg).toContain('--- src/auth.ts');
+    expect(msg).toContain('+const token = "abc";');
+    expect(msg).toContain('--- src/utils.ts');
+    expect(msg).toContain('+export function foo() {}');
+  });
+
+  it('includes context when provided', () => {
+    const files = [makeFile('src/a.ts', '+line', 'full file content here')];
+    const msg = buildBatchReviewMessage(files, ['src/a.ts']);
+    expect(msg).toContain('### File context');
+    expect(msg).toContain('full file content here');
+  });
+
+  it('omits context when null', () => {
+    const files = [makeFile('src/a.ts', '+line')];
+    const msg = buildBatchReviewMessage(files, ['src/a.ts']);
+    expect(msg).not.toContain('### File context');
+  });
+
+  it('lists other changed files not in the batch', () => {
+    const files = [makeFile('src/a.ts', '+line')];
+    const allChanged = ['src/a.ts', 'src/b.ts', 'src/c.ts'];
+    const msg = buildBatchReviewMessage(files, allChanged);
+    expect(msg).toContain('### Other changed files');
+    expect(msg).toContain('- src/b.ts');
+    expect(msg).toContain('- src/c.ts');
+    // Extract just the "Other changed files" section to verify src/a.ts is not listed there
+    const otherSection = msg.split('### Other changed files')[1]!.split('---')[0]!;
+    expect(otherSection).not.toContain('src/a.ts');
+  });
+
+  it('omits other files section when all files are in the batch', () => {
+    const files = [makeFile('src/a.ts', '+line'), makeFile('src/b.ts', '+line2')];
+    const msg = buildBatchReviewMessage(files, ['src/a.ts', 'src/b.ts']);
+    expect(msg).not.toContain('### Other changed files');
+  });
+
+  it('includes file metadata (additions/deletions)', () => {
+    const files = [makeFile('src/a.ts', '+line')];
+    const msg = buildBatchReviewMessage(files, ['src/a.ts']);
+    expect(msg).toContain('+10/-5');
   });
 });

@@ -1,4 +1,4 @@
-import type { ReviewPerspective } from '../types.js';
+import type { ReviewPerspective, FileDiffWithContext } from '../types.js';
 import { getPerspectiveInstructions, PERSPECTIVE_LABELS } from './perspectives.js';
 
 /**
@@ -142,4 +142,101 @@ export function buildMergeMessage(
     .join('\n\n');
 
   return `Here are the code reviews from different AI models:\n\n${reviewsText}\n\n=== Original Code ===\n${originalDiff}`;
+}
+
+// ─── Batch Review Prompts ────────────────────────────────────
+
+/**
+ * Build the system prompt for batch review (multiple files in one API call).
+ * Similar to buildSystemPrompt but instructs the model to review MULTIPLE files
+ * and return a structured array of per-file results.
+ */
+export function buildBatchSystemPrompt(perspective: ReviewPerspective): string {
+  const label = PERSPECTIVE_LABELS[perspective];
+  const instructions = getPerspectiveInstructions(perspective);
+
+  return `You are an expert code reviewer specializing in **${label}**.
+You will be given MULTIPLE files' diffs and surrounding context to review in a single request.
+Review each file independently from your specialized perspective.
+
+${instructions}
+
+### Output Rules:
+- ONLY report issues related to your focus area (${label}). Ignore everything else.
+- Do NOT fabricate issues. Only report problems you genuinely find in the code.
+- If a file is clean from your perspective, return an empty issues array and a positive summary for that file.
+- Be specific — include file paths and line numbers when available.
+- Focus on substantive issues, not style nitpicks (assume auto-formatters handle style).
+- Review EACH file independently. Return results for ALL files provided.
+
+Severity levels:
+- "critical": Must fix before merge — bugs, security vulnerabilities, data loss risks
+- "warning": Should fix — performance issues, error handling gaps, potential edge cases
+- "suggestion": Nice to have — improvements, better patterns, readability
+- "good": Positive observations — well-written patterns, good practices to reinforce
+
+JSON output schema:
+{
+  "fileReviews": [
+    {
+      "filePath": "path/to/file.ts",
+      "issues": [
+        {
+          "title": "Short descriptive title",
+          "severity": "critical" | "warning" | "suggestion" | "good",
+          "file": "path/to/file.ts (optional)",
+          "line": 42,
+          "description": "Detailed explanation",
+          "suggestion": "Suggested fix (optional)"
+        }
+      ],
+      "summary": "Brief assessment of this file from the ${label} perspective"
+    }
+  ]
+}
+
+IMPORTANT: Return results for EVERY file provided, even if the file has no issues.
+Respond with ONLY the JSON object. No markdown fences, no explanation outside the JSON.`;
+}
+
+/**
+ * Build the user message for batch review containing multiple files' diffs and context.
+ * Uses the same format as triage: `--- path (META) ---\n diff\n context`
+ */
+export function buildBatchReviewMessage(
+  files: readonly FileDiffWithContext[],
+  allChangedFiles: readonly string[],
+): string {
+  let message = `## Files under review (${files.length} files)\n\n`;
+
+  // List all changed files for cross-reference
+  if (allChangedFiles.length > files.length) {
+    message += `### Other changed files in this diff:\n`;
+    const reviewPaths = new Set(files.map((f) => f.path));
+    message += allChangedFiles
+      .filter((f) => !reviewPaths.has(f))
+      .map((f) => `- ${f}`)
+      .join('\n');
+    message += '\n\n';
+  }
+
+  // Each file's diff and context
+  for (const file of files) {
+    const meta = [
+      file.isNew && 'NEW',
+      file.isDeleted && 'DELETED',
+      `+${file.additions}/-${file.deletions}`,
+    ]
+      .filter(Boolean)
+      .join(' ');
+
+    message += `--- ${file.path} (${meta}) ---\n`;
+    message += `### Diff:\n\`\`\`diff\n${file.diff}\n\`\`\`\n\n`;
+
+    if (file.context) {
+      message += `### File context (current version):\n\`\`\`\n${file.context}\n\`\`\`\n\n`;
+    }
+  }
+
+  return message;
 }
