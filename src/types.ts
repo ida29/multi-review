@@ -57,6 +57,7 @@ export interface CliConfig {
 
 /** Input mode for diff acquisition */
 export type InputMode =
+  | { readonly type: 'auto' }
   | { readonly type: 'staged' }
   | { readonly type: 'unstaged' }
   | { readonly type: 'pr'; readonly prNumber: number }

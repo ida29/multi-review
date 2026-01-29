@@ -2,23 +2,62 @@ import { execSync } from 'node:child_process';
 import { readFileSync, existsSync } from 'node:fs';
 import type { InputMode } from '../types.js';
 
+/** Resolved input with the actual mode used */
+export interface ResolvedInput {
+  readonly content: string;
+  readonly resolvedMode: string;
+}
+
 /**
  * Read diff/content based on the input mode.
- * Returns the raw string to be sent for review.
+ * Returns the raw string and the resolved mode description.
  */
-export function readInput(mode: InputMode): string {
+export function readInput(mode: InputMode): ResolvedInput {
   switch (mode.type) {
+    case 'auto':
+      return readAuto();
     case 'staged':
-      return readStagedDiff();
+      return { content: readStagedDiff(), resolvedMode: 'staged' };
     case 'unstaged':
-      return readUnstagedDiff();
+      return { content: readUnstagedDiff(), resolvedMode: 'unstaged' };
     case 'pr':
-      return readPrDiff(mode.prNumber);
+      return { content: readPrDiff(mode.prNumber), resolvedMode: `PR #${mode.prNumber}` };
     case 'file':
-      return readFile(mode.filePath);
+      return { content: readFile(mode.filePath), resolvedMode: `file: ${mode.filePath}` };
     case 'stdin':
-      return readStdin();
+      return { content: readStdin(), resolvedMode: 'stdin' };
   }
+}
+
+/**
+ * Auto-detect: staged → unstaged → last commit.
+ * Picks the first non-empty diff.
+ */
+function readAuto(): ResolvedInput {
+  // 1. Staged changes
+  const staged = execOrEmpty('git diff --cached');
+  if (staged.trim()) {
+    return { content: staged, resolvedMode: 'staged (auto)' };
+  }
+
+  // 2. Unstaged changes
+  const unstaged = execOrEmpty('git diff');
+  if (unstaged.trim()) {
+    return { content: unstaged, resolvedMode: 'unstaged (auto)' };
+  }
+
+  // 3. Last commit diff
+  const lastCommit = execOrEmpty('git diff HEAD~1');
+  if (lastCommit.trim()) {
+    return { content: lastCommit, resolvedMode: 'last commit (auto)' };
+  }
+
+  throw new Error(
+    'No changes found. Try:\n' +
+      '  - Stage changes: git add <files>\n' +
+      '  - Review a PR: multi-review --pr <number>\n' +
+      '  - Review a file: multi-review <path>',
+  );
 }
 
 function readStagedDiff(): string {
@@ -77,5 +116,13 @@ function exec(command: string): string {
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     throw new Error(`Command failed: ${command}\n${msg}`);
+  }
+}
+
+function execOrEmpty(command: string): string {
+  try {
+    return execSync(command, { encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024 });
+  } catch {
+    return '';
   }
 }

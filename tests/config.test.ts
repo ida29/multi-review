@@ -68,11 +68,14 @@ describe('resolveConfig', () => {
 });
 
 describe('resolveInputMode', () => {
-  it('defaults to staged or stdin depending on TTY', () => {
+  it('defaults to auto', () => {
     const mode = resolveInputMode({});
-    // In test environments stdin is not a TTY, so 'stdin' is expected
-    // In interactive terminals, 'staged' would be returned
-    expect(['staged', 'stdin']).toContain(mode.type);
+    expect(mode.type).toBe('auto');
+  });
+
+  it('returns stdin when --stdin', () => {
+    const mode = resolveInputMode({ stdin: true });
+    expect(mode.type).toBe('stdin');
   });
 
   it('returns unstaged when --diff', () => {

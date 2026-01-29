@@ -5,6 +5,7 @@ interface RawCliArgs {
   readonly file?: string;
   readonly diff?: boolean;
   readonly pr?: number;
+  readonly stdin?: boolean;
   readonly models?: string;
   readonly mergeModel?: string;
   readonly timeout?: number;
@@ -42,12 +43,11 @@ export function resolveInputMode(args: RawCliArgs): InputMode {
   if (args.diff) {
     return { type: 'unstaged' };
   }
-  // Check if stdin has data (piped input)
-  if (!process.stdin.isTTY) {
+  if (args.stdin) {
     return { type: 'stdin' };
   }
-  // Default: staged changes
-  return { type: 'staged' };
+  // Default: auto-detect (staged → unstaged → last commit)
+  return { type: 'auto' };
 }
 
 function resolveModels(argModels?: string): readonly string[] {

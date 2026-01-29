@@ -19,6 +19,7 @@ export async function run(argv: string[]): Promise<void> {
     .argument('[file]', 'File to review')
     .option('--diff', 'Review all uncommitted changes')
     .option('--pr <number>', 'Review a pull request', parseInt)
+    .option('--stdin', 'Read from stdin (for piping)')
     .option('--models <list>', 'Comma-separated model list')
     .option('--merge-model <model>', 'Model to use for merging')
     .option('--timeout <seconds>', 'Timeout per model in seconds', parseInt)
@@ -31,6 +32,7 @@ export async function run(argv: string[]): Promise<void> {
     file: program.args[0],
     diff: opts['diff'] as boolean | undefined,
     pr: opts['pr'] as number | undefined,
+    stdin: opts['stdin'] as boolean | undefined,
     models: opts['models'] as string | undefined,
     mergeModel: opts['mergeModel'] as string | undefined,
     timeout: opts['timeout'] as number | undefined,
@@ -42,13 +44,14 @@ export async function run(argv: string[]): Promise<void> {
   const inputMode = resolveInputMode(args);
 
   // Step 1: Read input
-  const inputSpinner = createSpinner('Reading input...').start();
+  const inputSpinner = createSpinner('Detecting changes...').start();
 
   let content: string;
   try {
-    content = readInput(inputMode);
+    const input = readInput(inputMode);
+    content = input.content;
     inputSpinner.success({
-      text: `Input ready (${content.length} chars, mode: ${inputMode.type})`,
+      text: `Input ready (${content.length} chars, source: ${input.resolvedMode})`,
     });
   } catch (err) {
     inputSpinner.error({ text: err instanceof Error ? err.message : String(err) });
