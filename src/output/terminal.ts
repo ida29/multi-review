@@ -1,5 +1,14 @@
 import pc from 'picocolors';
-import type { MergedReport, MergedIssue, Severity, Consensus, ModelReview } from '../types.js';
+import type {
+  AggregatedReport,
+  FileMergedReview,
+  MergedIssue,
+  WalkthroughEntry,
+  ModelPerformance,
+  Severity,
+  Consensus,
+  TriageDecision,
+} from '../types.js';
 
 const SEVERITY_LABELS: Record<Severity, string> = {
   critical: pc.bgRed(pc.white(pc.bold(' CRIT '))),
@@ -14,63 +23,102 @@ const CONSENSUS_LABELS: Record<Consensus, string> = {
   single: pc.dim('[1 MODEL]'),
 };
 
+const TRIAGE_ICONS: Record<TriageDecision, string> = {
+  review: pc.green('R'),
+  skip: pc.dim('S'),
+  context_only: pc.yellow('C'),
+};
+
 /**
- * Print the merged report to terminal with colors.
+ * Print the aggregated report to terminal with colors.
  */
-export function printReport(report: MergedReport, verbose: boolean): void {
+export function printAggregatedReport(report: AggregatedReport, verbose: boolean): void {
   console.log();
-  console.log(pc.bold(pc.underline('Multi-Review Report')));
-  console.log();
-
-  // Summary
-  console.log(pc.bold('Summary'));
-  console.log(pc.dim('─'.repeat(60)));
-  console.log(report.summary);
+  console.log(pc.bold(pc.underline('Multi-Review Report (v2 Pipeline)')));
   console.log();
 
-  // Issues by severity
-  const criticals = report.issues.filter((i) => i.severity === 'critical');
-  const warnings = report.issues.filter((i) => i.severity === 'warning');
-  const suggestions = report.issues.filter((i) => i.severity === 'suggestion');
-  const goods = report.issues.filter((i) => i.severity === 'good');
+  // Walkthrough
+  printWalkthrough(report.walkthrough);
 
-  if (report.issues.length === 0) {
-    console.log(pc.green('No issues found. Code looks clean!'));
-  } else {
-    console.log(
-      pc.bold(
-        `Found ${report.issues.length} item(s): ` +
-          [
-            criticals.length > 0 ? pc.red(`${criticals.length} critical`) : null,
-            warnings.length > 0 ? pc.yellow(`${warnings.length} warning`) : null,
-            suggestions.length > 0 ? pc.cyan(`${suggestions.length} suggestion`) : null,
-            goods.length > 0 ? pc.green(`${goods.length} good`) : null,
-          ]
-            .filter(Boolean)
-            .join(', '),
-      ),
-    );
-    console.log();
+  // Stats summary
+  printStats(report);
 
-    // Print issues grouped by severity
-    for (const group of [criticals, warnings, suggestions, goods]) {
-      for (const issue of group) {
-        printIssue(issue);
-      }
-    }
+  // Per-file issues
+  if (report.fileReviews.length > 0) {
+    printFileReviews(report.fileReviews);
   }
 
-  // Model performance summary
-  console.log(pc.dim('─'.repeat(60)));
-  console.log(pc.bold('Model Performance'));
-  console.log();
+  // Model performance
+  printModelPerformance(report.modelPerformance);
 
-  for (const result of report.modelResults) {
-    printModelResult(result);
-  }
+  // Failed reviews detail (always shown when there are failures)
+  printFailedReviews(report.fileReviews);
 
+  // Verbose: individual model results
   if (verbose) {
-    printVerboseModelResults(report.modelResults);
+    printVerboseFileResults(report.fileReviews);
+  }
+
+  console.log();
+}
+
+function printWalkthrough(walkthrough: readonly WalkthroughEntry[]): void {
+  console.log(pc.bold('Walkthrough'));
+  console.log(pc.dim('─'.repeat(70)));
+
+  for (const entry of walkthrough) {
+    const icon = TRIAGE_ICONS[entry.decision];
+    const path = entry.decision === 'skip' ? pc.dim(entry.filePath) : entry.filePath;
+    const summary = entry.decision === 'skip' ? pc.dim(entry.summary) : entry.summary;
+
+    console.log(`  ${icon} ${path}`);
+    console.log(`    ${summary}`);
+  }
+
+  console.log();
+}
+
+function printStats(report: AggregatedReport): void {
+  const s = report.stats;
+  console.log(pc.bold('Statistics'));
+  console.log(pc.dim('─'.repeat(70)));
+  console.log(
+    `  Files: ${s.totalFiles} total, ${pc.green(`${s.reviewedFiles} reviewed`)}, ` +
+      `${pc.dim(`${s.skippedFiles} skipped`)}, ${pc.yellow(`${s.contextOnlyFiles} context`)}`,
+  );
+
+  if (s.totalIssues === 0) {
+    console.log(`  ${pc.green('No issues found. Code looks clean!')}`);
+  } else {
+    const parts = [
+      s.criticalCount > 0 ? pc.red(`${s.criticalCount} critical`) : null,
+      s.warningCount > 0 ? pc.yellow(`${s.warningCount} warning`) : null,
+      s.suggestionCount > 0 ? pc.cyan(`${s.suggestionCount} suggestion`) : null,
+      s.goodCount > 0 ? pc.green(`${s.goodCount} good`) : null,
+    ]
+      .filter(Boolean)
+      .join(', ');
+    console.log(`  Issues: ${s.totalIssues} total — ${parts}`);
+  }
+
+  console.log();
+}
+
+function printFileReviews(reviews: readonly FileMergedReview[]): void {
+  const reviewsWithIssues = reviews.filter((r) => r.issues.length > 0);
+
+  if (reviewsWithIssues.length === 0) return;
+
+  console.log(pc.bold('Issues by File'));
+  console.log(pc.dim('─'.repeat(70)));
+
+  for (const review of reviewsWithIssues) {
+    console.log();
+    console.log(pc.bold(pc.underline(review.filePath)));
+
+    for (const issue of review.issues) {
+      printIssue(issue);
+    }
   }
 
   console.log();
@@ -81,57 +129,116 @@ function printIssue(issue: MergedIssue): void {
   const consensus = CONSENSUS_LABELS[issue.consensus];
   const location = formatLocation(issue.file, issue.line);
 
-  console.log(`${severity} ${consensus} ${pc.bold(issue.title)}`);
+  console.log(`  ${severity} ${consensus} ${pc.bold(issue.title)}`);
 
   if (location) {
-    console.log(`  ${pc.dim('at')} ${pc.underline(location)}`);
+    console.log(`    ${pc.dim('at')} ${pc.underline(location)}`);
   }
 
-  console.log(`  ${issue.description}`);
+  console.log(`    ${issue.description}`);
 
   if (issue.suggestion) {
-    console.log(`  ${pc.dim('→')} ${pc.green(issue.suggestion)}`);
+    console.log(`    ${pc.dim('->')} ${pc.green(issue.suggestion)}`);
   }
 
-  console.log(`  ${pc.dim(`Models: ${issue.models.join(', ')}`)}`);
-  console.log();
+  console.log(`    ${pc.dim(`Models: ${issue.models.join(', ')}`)}`);
 }
 
-function printModelResult(result: ModelReview): void {
-  const statusIcon =
-    result.status === 'success'
-      ? pc.green('✓')
-      : result.status === 'timeout'
-        ? pc.yellow('⏱')
-        : pc.red('✗');
+function printModelPerformance(performance: readonly ModelPerformance[]): void {
+  console.log(pc.dim('─'.repeat(70)));
+  console.log(pc.bold('Model Performance'));
+  console.log();
 
-  const duration = `${(result.durationMs / 1000).toFixed(1)}s`;
-  const issueCount =
-    result.status === 'success' ? `${result.issues.length} issues` : (result.error ?? 'failed');
+  for (const mp of performance) {
+    const statusIcon =
+      mp.errorCount === 0 && mp.timeoutCount === 0
+        ? pc.green('OK')
+        : mp.successCount > 0
+          ? pc.yellow('!!')
+          : pc.red('XX');
 
-  console.log(
-    `  ${statusIcon} ${pc.bold(result.model)} ${pc.dim(`(${duration})`)} — ${issueCount}`,
-  );
+    const avgSec = (mp.avgDurationMs / 1000).toFixed(1);
+    const totalSec = (mp.totalDurationMs / 1000).toFixed(1);
+
+    console.log(
+      `  ${statusIcon} ${pc.bold(mp.model)} — ` +
+        `${mp.successCount}/${mp.totalFiles} files, ` +
+        `avg ${avgSec}s, total ${totalSec}s` +
+        (mp.errorCount > 0 ? pc.red(` (${mp.errorCount} errors)`) : '') +
+        (mp.timeoutCount > 0 ? pc.yellow(` (${mp.timeoutCount} timeouts)`) : ''),
+    );
+  }
 }
 
-function printVerboseModelResults(results: readonly ModelReview[]): void {
-  console.log();
-  console.log(pc.bold(pc.underline('Individual Model Results')));
+function printFailedReviews(reviews: readonly FileMergedReview[]): void {
+  const failures: {
+    filePath: string;
+    model: string;
+    status: string;
+    error: string;
+    retries: number;
+  }[] = [];
 
-  for (const result of results) {
-    console.log();
-    console.log(pc.bold(`── ${result.model} ──`));
-
-    if (result.status !== 'success') {
-      console.log(pc.red(`  Error: ${result.error}`));
-      continue;
+  for (const review of reviews) {
+    for (const result of review.modelResults) {
+      if (result.status !== 'success') {
+        failures.push({
+          filePath: result.filePath,
+          model: result.model,
+          status: result.status,
+          error: result.error ?? 'unknown error',
+          retries: result.retries ?? 0,
+        });
+      }
     }
+  }
 
-    console.log(`  ${pc.dim('Summary:')} ${result.summary}`);
+  if (failures.length === 0) return;
 
-    for (const issue of result.issues) {
-      const severity = SEVERITY_LABELS[issue.severity];
-      console.log(`  ${severity} ${issue.title}`);
+  console.log();
+  console.log(pc.bold(pc.red('Failed Reviews')));
+  console.log(pc.dim('─'.repeat(70)));
+
+  for (const f of failures) {
+    const icon = f.status === 'timeout' ? pc.yellow('TM') : pc.red('XX');
+    const retryInfo = f.retries > 0 ? pc.dim(` (${f.retries} retries)`) : '';
+    console.log(`  ${icon} ${pc.bold(f.model)} ${pc.dim('→')} ${f.filePath}${retryInfo}`);
+    console.log(`    ${pc.red(f.error)}`);
+  }
+
+  console.log();
+}
+
+function printVerboseFileResults(reviews: readonly FileMergedReview[]): void {
+  console.log();
+  console.log(pc.bold(pc.underline('Verbose: Per-File Model Results')));
+
+  for (const review of reviews) {
+    console.log();
+    console.log(pc.bold(`-- ${review.filePath} --`));
+
+    for (const result of review.modelResults) {
+      const statusIcon =
+        result.status === 'success'
+          ? pc.green('OK')
+          : result.status === 'timeout'
+            ? pc.yellow('TM')
+            : pc.red('XX');
+
+      const duration = `${(result.durationMs / 1000).toFixed(1)}s`;
+      const issueCount =
+        result.status === 'success' ? `${result.issues.length} issues` : (result.error ?? 'failed');
+
+      console.log(
+        `  ${statusIcon} ${pc.bold(result.model)} ${pc.dim(`(${duration})`)} — ${issueCount}`,
+      );
+
+      if (result.status === 'success') {
+        for (const issue of result.issues) {
+          const severity = SEVERITY_LABELS[issue.severity];
+          console.log(`    ${severity} ${issue.title}`);
+        }
+      }
     }
   }
 }

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { modelReviewOutputSchema, mergedReportOutputSchema } from '../src/merge/schemas.js';
+import { modelReviewOutputSchema, mergedReportOutputSchema } from '../src/aggregate/schemas.js';
 
 describe('modelReviewOutputSchema', () => {
   it('validates correct review output', () => {

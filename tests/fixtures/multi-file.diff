@@ -1,0 +1,54 @@
+diff --git a/src/auth.ts b/src/auth.ts
+index 1234567..abcdefg 100644
+--- a/src/auth.ts
++++ b/src/auth.ts
+@@ -10,7 +10,10 @@ export async function login(username: string, password: string) {
+-  const user = await db.query(`SELECT * FROM users WHERE username = '${username}'`);
++  const user = await db.query('SELECT * FROM users WHERE username = ?', [username]);
+   if (!user) {
+     throw new Error('User not found');
+   }
+-  if (user.password === password) {
++  const isValid = await bcrypt.compare(password, user.passwordHash);
++  if (isValid) {
+     return generateToken(user);
+   }
++  throw new Error('Invalid credentials');
+ }
+diff --git a/package-lock.json b/package-lock.json
+index aaaaaaa..bbbbbbb 100644
+--- a/package-lock.json
++++ b/package-lock.json
+@@ -1,5 +1,5 @@
+ {
+-  "lockfileVersion": 2,
++  "lockfileVersion": 3,
+   "requires": true,
+   "packages": {}
+ }
+diff --git a/src/utils.ts b/src/utils.ts
+new file mode 100644
+--- /dev/null
++++ b/src/utils.ts
+@@ -0,0 +1,8 @@
++export function formatDate(date: Date): string {
++  return date.toISOString().split('T')[0];
++}
++
++export function sleep(ms: number): Promise<void> {
++  return new Promise((resolve) => setTimeout(resolve, ms));
++}
++
+diff --git a/src/legacy.ts b/src/legacy.ts
+deleted file mode 100644
+--- a/src/legacy.ts
++++ /dev/null
+@@ -1,5 +0,0 @@
+-export function oldFunction(): void {
+-  console.log('deprecated');
+-}
+-
+-export const LEGACY_CONST = 42;
+diff --git a/dist/bundle.min.js b/dist/bundle.min.js
+index ccccccc..ddddddd 100644
+Binary files a/dist/bundle.min.js and b/dist/bundle.min.js differ

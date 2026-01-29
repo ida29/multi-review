@@ -1,0 +1,13 @@
+{
+  "$schema": "https://unpkg.com/knip@5/schema.json",
+  "entry": [
+    "src/aggregate/index.ts",
+    "src/input/index.ts",
+    "src/output/index.ts",
+    "src/parse/index.ts",
+    "src/review/index.ts",
+    "src/shared/index.ts",
+    "src/triage/index.ts"
+  ],
+  "project": ["src/**/*.ts", "bin/**/*.ts"]
+}

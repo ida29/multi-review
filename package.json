@@ -1,15 +1,15 @@
 {
   "name": "multi-review",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "description": "Multi-AI parallel code review CLI using GitHub Copilot SDK",
   "type": "module",
   "bin": {
     "multi-review": "./dist/bin/multi-review.js"
   },
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && chmod +x dist/bin/multi-review.js",
     "dev": "tsx bin/multi-review.ts",
-    "check": "tsc --noEmit && oxlint src/ bin/ tests/ && oxfmt --check",
+    "check": "tsc --noEmit && oxlint src/ bin/ tests/ && oxfmt --check && knip",
     "fix": "oxlint --fix src/ bin/ tests/ && oxfmt",
     "test": "vitest run",
     "test:watch": "vitest"
@@ -23,6 +23,7 @@
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
+    "knip": "^5.82.1",
     "oxfmt": "^0.7.0",
     "oxlint": "^0.16.6",
     "tsx": "^4.19.0",

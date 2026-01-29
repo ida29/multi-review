@@ -1,26 +1,32 @@
+import type { ReviewPerspective } from '../types.js';
+import { getPerspectiveInstructions, PERSPECTIVE_LABELS } from './perspectives.js';
+
 /**
- * System prompt for code review models.
- * Instructs the model to produce structured JSON output.
+ * Build the system prompt for a specific review perspective.
+ * Each perspective gets a focused instruction set that narrows the reviewer's attention.
  */
-export function buildSystemPrompt(): string {
-  return `You are an expert code reviewer. You will be given a code diff or file content to review.
+export function buildSystemPrompt(perspective: ReviewPerspective): string {
+  const label = PERSPECTIVE_LABELS[perspective];
+  const instructions = getPerspectiveInstructions(perspective);
 
-Your task:
-1. Identify real issues — bugs, security vulnerabilities, performance problems, maintainability concerns, and good practices.
-2. Rate each issue with a severity level.
-3. Output your review as valid JSON matching the schema below.
+  return `You are an expert code reviewer specializing in **${label}**.
+You will be given a single file's diff and surrounding context to review.
 
-IMPORTANT RULES:
+${instructions}
+
+### Output Rules:
+- ONLY report issues related to your focus area (${label}). Ignore everything else.
 - Do NOT fabricate issues. Only report problems you genuinely find in the code.
-- If the code is clean, return an empty issues array and a positive summary.
+- If the code is clean from your perspective, return an empty issues array and a positive summary.
 - Be specific — include file paths and line numbers when available.
 - Focus on substantive issues, not style nitpicks (assume auto-formatters handle style).
+- You are reviewing a SINGLE file. Focus on this file's changes.
 
 Severity levels:
-- "critical": Bugs, security vulnerabilities, data loss risks — must fix before merge
-- "warning": Performance issues, error handling gaps, potential edge cases — should fix
-- "suggestion": Improvements, better patterns, readability — nice to have
-- "good": Positive observations, well-written patterns — keep doing this
+- "critical": Must fix before merge — bugs, security vulnerabilities, data loss risks
+- "warning": Should fix — performance issues, error handling gaps, potential edge cases
+- "suggestion": Nice to have — improvements, better patterns, readability
+- "good": Positive observations — well-written patterns, good practices to reinforce
 
 JSON output schema:
 {
@@ -34,14 +40,48 @@ JSON output schema:
       "suggestion": "Suggested fix (optional)"
     }
   ],
-  "summary": "Brief overall assessment of the code quality"
+  "summary": "Brief assessment from the ${label} perspective"
 }
 
 Respond with ONLY the JSON object. No markdown fences, no explanation outside the JSON.`;
 }
 
 /**
+ * Build the per-file review message.
+ * Includes the file's diff, optional surrounding context, and the list of all changed files.
+ */
+export function buildPerFileReviewMessage(
+  filePath: string,
+  diff: string,
+  context: string | null,
+  allChangedFiles: readonly string[],
+): string {
+  let message = `## File under review: ${filePath}\n\n`;
+
+  // Provide context of what other files changed (for cross-reference)
+  if (allChangedFiles.length > 1) {
+    message += `### Other changed files in this diff:\n`;
+    message += allChangedFiles
+      .filter((f) => f !== filePath)
+      .map((f) => `- ${f}`)
+      .join('\n');
+    message += '\n\n';
+  }
+
+  // File diff
+  message += `### Diff:\n\`\`\`diff\n${diff}\n\`\`\`\n\n`;
+
+  // Surrounding context from working tree
+  if (context) {
+    message += `### File context (current version):\n\`\`\`\n${context}\n\`\`\`\n`;
+  }
+
+  return message;
+}
+
+/**
  * Build the user message containing the diff/content to review.
+ * Kept for backward compatibility (whole-diff mode).
  */
 export function buildReviewMessage(content: string): string {
   return `Please review the following code:\n\n${content}`;

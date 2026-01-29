@@ -1,5 +1,13 @@
-import type { CliConfig, InputMode } from './types.js';
-import { DEFAULT_MODELS, DEFAULT_TIMEOUT } from './types.js';
+import type { CliConfig, InputMode, ReviewPerspective } from './types.js';
+import {
+  DEFAULT_MODELS,
+  DEFAULT_TIMEOUT,
+  DEFAULT_MAX_RETRIES,
+  DEFAULT_RETRY_DELAY_MS,
+  DEFAULT_CONCURRENCY,
+  DEFAULT_CONTEXT_LINES,
+  ALL_PERSPECTIVES,
+} from './types.js';
 
 interface RawCliArgs {
   readonly file?: string;
@@ -9,6 +17,12 @@ interface RawCliArgs {
   readonly models?: string;
   readonly mergeModel?: string;
   readonly timeout?: number;
+  readonly retries?: number;
+  readonly retryDelay?: number;
+  readonly concurrency?: number;
+  readonly contextLines?: number;
+  readonly perspectives?: string;
+  readonly noTriage?: boolean;
   readonly json?: boolean;
   readonly verbose?: boolean;
 }
@@ -20,11 +34,25 @@ export function resolveConfig(args: RawCliArgs): CliConfig {
   const models = resolveModels(args.models);
   const mergeModel = args.mergeModel ?? process.env['MULTI_REVIEW_MERGE_MODEL'] ?? models[0]!;
   const timeoutSeconds = args.timeout ?? parseEnvInt('MULTI_REVIEW_TIMEOUT') ?? DEFAULT_TIMEOUT;
+  const maxRetries = args.retries ?? parseEnvInt('MULTI_REVIEW_MAX_RETRIES') ?? DEFAULT_MAX_RETRIES;
+  const retryDelayMs =
+    args.retryDelay ?? parseEnvInt('MULTI_REVIEW_RETRY_DELAY_MS') ?? DEFAULT_RETRY_DELAY_MS;
+  const concurrency =
+    args.concurrency ?? parseEnvInt('MULTI_REVIEW_CONCURRENCY') ?? DEFAULT_CONCURRENCY;
+  const contextLines =
+    args.contextLines ?? parseEnvInt('MULTI_REVIEW_CONTEXT_LINES') ?? DEFAULT_CONTEXT_LINES;
+  const perspectives = resolvePerspectives(args.perspectives);
 
   return {
     models,
     mergeModel,
     timeoutSeconds,
+    maxRetries,
+    retryDelayMs,
+    concurrency,
+    contextLines,
+    perspectives,
+    noTriage: args.noTriage ?? false,
     jsonOutput: args.json ?? false,
     verbose: args.verbose ?? false,
   };
@@ -63,6 +91,24 @@ function resolveModels(argModels?: string): readonly string[] {
     return parsed;
   }
   return DEFAULT_MODELS;
+}
+
+function resolvePerspectives(argPerspectives?: string): readonly ReviewPerspective[] {
+  const raw = argPerspectives ?? process.env['MULTI_REVIEW_PERSPECTIVES'];
+  if (raw != null) {
+    const parsed = raw
+      .split(',')
+      .map((p) => p.trim().toLowerCase())
+      .filter(Boolean);
+    const valid = parsed.filter((p): p is ReviewPerspective =>
+      ALL_PERSPECTIVES.includes(p as ReviewPerspective),
+    );
+    if (valid.length === 0) {
+      throw new Error(`No valid perspectives specified. Available: ${ALL_PERSPECTIVES.join(', ')}`);
+    }
+    return valid;
+  }
+  return ALL_PERSPECTIVES;
 }
 
 function parseEnvInt(key: string): number | undefined {

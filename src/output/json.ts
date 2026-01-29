@@ -1,8 +1,8 @@
-import type { MergedReport } from '../types.js';
+import type { AggregatedReport } from '../types.js';
 
 /**
- * Print the merged report as JSON to stdout.
+ * Print the aggregated report as JSON to stdout.
  */
-export function printJsonReport(report: MergedReport): void {
+export function printJsonReport(report: AggregatedReport): void {
   console.log(JSON.stringify(report, null, 2));
 }

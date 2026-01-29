@@ -1,12 +1,24 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { resolveConfig, resolveInputMode } from '../src/config.js';
-import { DEFAULT_MODELS, DEFAULT_MERGE_MODEL, DEFAULT_TIMEOUT } from '../src/types.js';
+import {
+  DEFAULT_MODELS,
+  DEFAULT_MERGE_MODEL,
+  DEFAULT_TIMEOUT,
+  DEFAULT_CONCURRENCY,
+  DEFAULT_CONTEXT_LINES,
+  ALL_PERSPECTIVES,
+} from '../src/types.js';
 
 describe('resolveConfig', () => {
   afterEach(() => {
     delete process.env['MULTI_REVIEW_MODELS'];
     delete process.env['MULTI_REVIEW_TIMEOUT'];
     delete process.env['MULTI_REVIEW_MERGE_MODEL'];
+    delete process.env['MULTI_REVIEW_CONCURRENCY'];
+    delete process.env['MULTI_REVIEW_CONTEXT_LINES'];
+    delete process.env['MULTI_REVIEW_PERSPECTIVES'];
+    delete process.env['MULTI_REVIEW_MAX_RETRIES'];
+    delete process.env['MULTI_REVIEW_RETRY_DELAY_MS'];
   });
 
   it('returns defaults when no args or env', () => {
@@ -14,6 +26,10 @@ describe('resolveConfig', () => {
     expect(config.models).toEqual(DEFAULT_MODELS);
     expect(config.mergeModel).toBe(DEFAULT_MERGE_MODEL);
     expect(config.timeoutSeconds).toBe(DEFAULT_TIMEOUT);
+    expect(config.concurrency).toBe(DEFAULT_CONCURRENCY);
+    expect(config.contextLines).toBe(DEFAULT_CONTEXT_LINES);
+    expect(config.perspectives).toEqual(ALL_PERSPECTIVES);
+    expect(config.noTriage).toBe(false);
     expect(config.jsonOutput).toBe(false);
     expect(config.verbose).toBe(false);
   });
@@ -64,6 +80,85 @@ describe('resolveConfig', () => {
 
   it('throws on empty model list', () => {
     expect(() => resolveConfig({ models: '' })).toThrow('No models specified');
+  });
+
+  // Concurrency
+  it('uses CLI concurrency', () => {
+    const config = resolveConfig({ concurrency: 5 });
+    expect(config.concurrency).toBe(5);
+  });
+
+  it('uses env concurrency when no arg', () => {
+    process.env['MULTI_REVIEW_CONCURRENCY'] = '2';
+    const config = resolveConfig({});
+    expect(config.concurrency).toBe(2);
+  });
+
+  // Context lines
+  it('uses CLI contextLines', () => {
+    const config = resolveConfig({ contextLines: 200 });
+    expect(config.contextLines).toBe(200);
+  });
+
+  it('uses env contextLines when no arg', () => {
+    process.env['MULTI_REVIEW_CONTEXT_LINES'] = '100';
+    const config = resolveConfig({});
+    expect(config.contextLines).toBe(100);
+  });
+
+  // noTriage
+  it('sets noTriage flag', () => {
+    const config = resolveConfig({ noTriage: true });
+    expect(config.noTriage).toBe(true);
+  });
+
+  // Perspectives
+  it('defaults to all perspectives', () => {
+    const config = resolveConfig({});
+    expect(config.perspectives).toEqual(ALL_PERSPECTIVES);
+    expect(config.perspectives.length).toBe(6);
+  });
+
+  it('uses CLI perspectives', () => {
+    const config = resolveConfig({ perspectives: 'security,performance' });
+    expect(config.perspectives).toEqual(['security', 'performance']);
+  });
+
+  it('uses env perspectives when no arg', () => {
+    process.env['MULTI_REVIEW_PERSPECTIVES'] = 'logic,design';
+    const config = resolveConfig({});
+    expect(config.perspectives).toEqual(['logic', 'design']);
+  });
+
+  it('filters out invalid perspectives', () => {
+    const config = resolveConfig({ perspectives: 'security,invalid,logic' });
+    expect(config.perspectives).toEqual(['security', 'logic']);
+  });
+
+  it('throws when all perspectives are invalid', () => {
+    expect(() => resolveConfig({ perspectives: 'invalid,nope' })).toThrow('No valid perspectives');
+  });
+
+  it('is case-insensitive for perspectives', () => {
+    const config = resolveConfig({ perspectives: 'Security,PERFORMANCE,Logic' });
+    expect(config.perspectives).toEqual(['security', 'performance', 'logic']);
+  });
+
+  // Retries
+  it('uses CLI retries', () => {
+    const config = resolveConfig({ retries: 5 });
+    expect(config.maxRetries).toBe(5);
+  });
+
+  it('uses env retries when no arg', () => {
+    process.env['MULTI_REVIEW_MAX_RETRIES'] = '3';
+    const config = resolveConfig({});
+    expect(config.maxRetries).toBe(3);
+  });
+
+  it('uses CLI retryDelay', () => {
+    const config = resolveConfig({ retryDelay: 5000 });
+    expect(config.retryDelayMs).toBe(5000);
   });
 });
 

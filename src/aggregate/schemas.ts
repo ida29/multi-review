@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 /** Schema for a single review issue from an AI model */
-export const reviewIssueSchema = z.object({
+const reviewIssueSchema = z.object({
   title: z.string().describe('Short title of the issue'),
   severity: z.enum(['critical', 'warning', 'suggestion', 'good']),
   file: z.string().optional().describe('File path if applicable'),
@@ -17,7 +17,7 @@ export const modelReviewOutputSchema = z.object({
 });
 
 /** Schema for a merged issue */
-export const mergedIssueSchema = z.object({
+const mergedIssueSchema = z.object({
   title: z.string(),
   severity: z.enum(['critical', 'warning', 'suggestion', 'good']),
   file: z.string().optional(),
@@ -33,8 +33,3 @@ export const mergedReportOutputSchema = z.object({
   issues: z.array(mergedIssueSchema),
   summary: z.string().describe('Integrated summary across all model reviews'),
 });
-
-export type ReviewIssueOutput = z.infer<typeof reviewIssueSchema>;
-export type ModelReviewOutput = z.infer<typeof modelReviewOutputSchema>;
-export type MergedIssueOutput = z.infer<typeof mergedIssueSchema>;
-export type MergedReportOutput = z.infer<typeof mergedReportOutputSchema>;
