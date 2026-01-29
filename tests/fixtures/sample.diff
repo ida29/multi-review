@@ -1,0 +1,17 @@
+diff --git a/src/auth.ts b/src/auth.ts
+index 1234567..abcdefg 100644
+--- a/src/auth.ts
++++ b/src/auth.ts
+@@ -10,7 +10,10 @@ export async function login(username: string, password: string) {
+-  const user = await db.query(`SELECT * FROM users WHERE username = '${username}'`);
++  const user = await db.query('SELECT * FROM users WHERE username = ?', [username]);
+   if (!user) {
+     throw new Error('User not found');
+   }
+-  if (user.password === password) {
++  const isValid = await bcrypt.compare(password, user.passwordHash);
++  if (isValid) {
+     return generateToken(user);
+   }
++  throw new Error('Invalid credentials');
+ }
