@@ -175,7 +175,15 @@ export type InputMode =
   | { readonly type: 'unstaged' }
   | { readonly type: 'pr'; readonly prNumber: number }
   | { readonly type: 'file'; readonly filePath: string }
-  | { readonly type: 'stdin' };
+  | { readonly type: 'stdin' }
+  | { readonly type: 'all'; readonly glob?: string };
+
+/** File content read from working tree (for --all mode) */
+export interface FileContent {
+  readonly path: string;
+  readonly content: string;
+  readonly isBinary: boolean;
+}
 
 /** Default models for review */
 export const DEFAULT_MODELS = ['gpt-5.2', 'claude-opus-4.5', 'gemini-3-pro'] as const;

@@ -2,7 +2,7 @@ import { Command } from 'commander';
 import { createSpinner } from 'nanospinner';
 import pc from 'picocolors';
 import { resolveConfig, resolveInputMode } from './config.js';
-import { readInput } from './input/index.js';
+import { readInput, scanFiles, fileContentToFileDiff } from './input/index.js';
 import { parseDiff } from './parse/diffParser.js';
 import { loadFileContext } from './parse/contextLoader.js';
 import { triageFiles, triageFilesRulesOnly } from './triage/triager.js';
@@ -13,7 +13,7 @@ import { CopilotClientPool } from './shared/copilotPool.js';
 import { printAggregatedReport } from './output/terminal.js';
 import { printJsonReport } from './output/json.js';
 import { PERSPECTIVE_LABELS } from './review/perspectives.js';
-import type { FileDiffWithContext, TriagedFile, BatchReviewResult } from './types.js';
+import type { FileDiffWithContext, TriagedFile, BatchReviewResult, FileDiff } from './types.js';
 import { ALL_PERSPECTIVES } from './types.js';
 
 /**
@@ -30,6 +30,8 @@ export async function run(argv: string[]): Promise<void> {
     .option('--diff', 'Review all uncommitted changes')
     .option('--pr <number>', 'Review a pull request', parseInt)
     .option('--stdin', 'Read from stdin (for piping)')
+    .option('--all', 'Review all tracked files in the repository')
+    .option('--glob <pattern>', 'Glob pattern to filter files (used with --all)')
     .option('--models <list>', 'Comma-separated model list')
     .option('--merge-model <model>', 'Model to use for triage')
     .option('--timeout <seconds>', 'Timeout per model in seconds (default: 120)', parseInt)
@@ -56,6 +58,8 @@ export async function run(argv: string[]): Promise<void> {
     diff: opts['diff'] as boolean | undefined,
     pr: opts['pr'] as number | undefined,
     stdin: opts['stdin'] as boolean | undefined,
+    all: opts['all'] as boolean | undefined,
+    glob: opts['glob'] as string | undefined,
     models: opts['models'] as string | undefined,
     mergeModel: opts['mergeModel'] as string | undefined,
     timeout: opts['timeout'] as number | undefined,
@@ -85,37 +89,78 @@ export async function run(argv: string[]): Promise<void> {
 
   // ─── Stage 1: Read & Parse ────────────────────────────────
 
-  const inputSpinner = createSpinner('Detecting changes...').start();
+  let filesWithContext: FileDiffWithContext[];
+  const isAllMode = inputMode.type === 'all';
 
-  let content: string;
-  try {
-    const input = readInput(inputMode);
-    content = input.content;
-    inputSpinner.success({
-      text: `Input ready (${content.length} chars, source: ${input.resolvedMode})`,
+  if (isAllMode) {
+    // --all mode: scan tracked files directly
+    const scanSpinner = createSpinner('Scanning repository files...').start();
+
+    try {
+      const fileContents = scanFiles({ glob: inputMode.glob });
+
+      if (fileContents.length === 0) {
+        scanSpinner.error({
+          text: inputMode.glob
+            ? `No files found matching glob: ${inputMode.glob}`
+            : 'No tracked files found in repository',
+        });
+        process.exit(1);
+      }
+
+      // Convert to FileDiff format
+      const fileDiffs: FileDiff[] = fileContents.map(fileContentToFileDiff);
+
+      // For --all mode, use file content as context (no diff context needed)
+      filesWithContext = fileDiffs.map((f) => ({
+        ...f,
+        context: f.isBinary
+          ? null
+          : (fileContents.find((fc) => fc.path === f.path)?.content ?? null),
+      }));
+
+      const globInfo = inputMode.glob ? ` (glob: ${inputMode.glob})` : '';
+      scanSpinner.success({
+        text: `Scanned ${filesWithContext.length} file(s)${globInfo}`,
+      });
+    } catch (err) {
+      scanSpinner.error({ text: err instanceof Error ? err.message : String(err) });
+      process.exit(1);
+    }
+  } else {
+    // Standard diff mode
+    const inputSpinner = createSpinner('Detecting changes...').start();
+
+    let content: string;
+    try {
+      const input = readInput(inputMode);
+      content = input.content;
+      inputSpinner.success({
+        text: `Input ready (${content.length} chars, source: ${input.resolvedMode})`,
+      });
+    } catch (err) {
+      inputSpinner.error({ text: err instanceof Error ? err.message : String(err) });
+      process.exit(1);
+    }
+
+    const parseSpinner = createSpinner('Parsing diff...').start();
+    const fileDiffs = parseDiff(content);
+
+    if (fileDiffs.length === 0) {
+      parseSpinner.error({ text: 'No file changes found in diff' });
+      process.exit(1);
+    }
+
+    // Load file context from working tree
+    filesWithContext = fileDiffs.map((f) => ({
+      ...f,
+      context: loadFileContext(f, config.contextLines),
+    }));
+
+    parseSpinner.success({
+      text: `Parsed ${fileDiffs.length} file(s)`,
     });
-  } catch (err) {
-    inputSpinner.error({ text: err instanceof Error ? err.message : String(err) });
-    process.exit(1);
   }
-
-  const parseSpinner = createSpinner('Parsing diff...').start();
-  const fileDiffs = parseDiff(content);
-
-  if (fileDiffs.length === 0) {
-    parseSpinner.error({ text: 'No file changes found in diff' });
-    process.exit(1);
-  }
-
-  // Load file context from working tree
-  const filesWithContext: FileDiffWithContext[] = fileDiffs.map((f) => ({
-    ...f,
-    context: loadFileContext(f, config.contextLines),
-  }));
-
-  parseSpinner.success({
-    text: `Parsed ${fileDiffs.length} file(s)`,
-  });
 
   // ─── Stage 2: Triage ──────────────────────────────────────
 
@@ -123,10 +168,14 @@ export async function run(argv: string[]): Promise<void> {
 
   let triaged: readonly TriagedFile[];
 
-  if (config.noTriage) {
+  // --all mode forces rules-only triage (no diff to analyze with AI)
+  const useRulesOnlyTriage = config.noTriage || isAllMode;
+
+  if (useRulesOnlyTriage) {
     // Rules only, no AI
     triaged = triageFilesRulesOnly(filesWithContext);
-    triageSpinner.success({ text: 'Triage complete (rules only)' });
+    const triageMode = isAllMode ? 'rules only, --all mode' : 'rules only';
+    triageSpinner.success({ text: `Triage complete (${triageMode})` });
   } else {
     // Start a CopilotClient for AI triage (uses first model)
     const pool = new CopilotClientPool([config.mergeModel]);

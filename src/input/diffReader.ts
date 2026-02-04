@@ -26,6 +26,9 @@ export function readInput(mode: InputMode): ResolvedInput {
       return { content: readFile(mode.filePath), resolvedMode: `file: ${mode.filePath}` };
     case 'stdin':
       return { content: readStdin(), resolvedMode: 'stdin' };
+    case 'all':
+      // --all mode bypasses readInput; use scanFiles() directly instead
+      throw new Error('--all mode should use scanFiles(), not readInput()');
   }
 }
 

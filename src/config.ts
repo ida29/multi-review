@@ -15,6 +15,8 @@ interface RawCliArgs {
   readonly diff?: boolean;
   readonly pr?: number;
   readonly stdin?: boolean;
+  readonly all?: boolean;
+  readonly glob?: string;
   readonly models?: string;
   readonly mergeModel?: string;
   readonly timeout?: number;
@@ -61,8 +63,13 @@ export function resolveConfig(args: RawCliArgs): CliConfig {
 
 /**
  * Determine input mode from CLI args.
+ * Priority: --all (highest) > --pr > --file > --diff > --stdin > auto
  */
 export function resolveInputMode(args: RawCliArgs): InputMode {
+  // --all takes highest priority
+  if (args.all) {
+    return { type: 'all', glob: args.glob };
+  }
   if (args.pr != null) {
     return { type: 'pr', prNumber: args.pr };
   }
